@@ -1,6 +1,6 @@
 import Tour from '../models/tourModel';
 import { Request, Response, NextFunction } from 'express';
-
+import ApiFeatures from '../utils/ApiFeatures';
 export const aliasTopTours = async (
   req: Request,
   res: Response,
@@ -29,48 +29,19 @@ export const createTour = async (req: Request, res: Response) => {
     console.log(error);
   }
 };
+
 export const getTours = async (req: Request, res: Response) => {
   try {
     const { query } = req;
-    const queryObj = { ...query };
-    //exclude fields from query while filtering
-    const excludedFields = ['page', 'sort', 'limit', 'fields'];
-    excludedFields.forEach((el) => delete queryObj[el]);
-
-    // advanced filtering for $gte $lte type queries
-    let queryString = JSON.stringify(queryObj);
-    queryString = queryString.replace(
-      /\b(gt|lt|gte|lte)\b/g,
-      (matched: string) => `$${matched}`
-    );
-    let tourQuery = Tour.find(JSON.parse(queryString));
-
-    // adding sorting
-    if (req.query.sort) {
-      // the + sign adds white space without the code
-      // @ts-ignore
-      tourQuery = tourQuery.sort(req.query.sort);
-    } else {
-      tourQuery = tourQuery.sort('-createdAt');
-    }
-
-    // adding limiting fields
-    if (req.query.fields) {
-      console.log(req.query.fields);
-      // @ts-ignore
-      tourQuery = tourQuery.select(req.query.fields);
-    }
-
-    //adding pagination
-    //   @ts-ignore
-    const limit = req.query.limit * 1 || 5; //   @ts-ignore
-    const page = req.query.page * 1 || 1;
-    //   @ts-ignore
-    const skip = (page - 1) * limit;
-    tourQuery = tourQuery.skip(skip).limit(limit);
     // consuming chained query
-    const tours = await tourQuery;
-    res.status(200).json({
+    const tourApiFeatures = new ApiFeatures(Tour.find(), query)
+      .filtering()
+      .sorting()
+      .limitFields()
+      .paginate();
+    const tours = await tourApiFeatures.query;
+
+    res.status(201).json({
       status: 'success',
       results: tours.length,
       data: {
@@ -116,7 +87,7 @@ export const updateTour = async (req: Request, res: Response) => {
       new: true,
       runValidators: true,
     });
-    res.status(200).json({
+    res.status(201).json({
       status: 'success',
       data: {
         tour,
@@ -135,9 +106,85 @@ export const deleteTour = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     await Tour.findByIdAndDelete(id);
-    res.status(200).json({
+    res.status(204).json({
       status: 'success',
       data: null,
+    });
+  } catch (error) {
+    res.status(400).json({
+      status: 'fail',
+      message: 'Some error occured',
+    });
+    console.log(error);
+  }
+};
+
+export const getTourStatistics = async (req: Request, res: Response) => {
+  try {
+    const stats = await Tour.aggregate([
+      { $match: { ratingsAverage: { $gte: 4.5 } } },
+      {
+        $group: {
+          _id: '$difficulty',
+          numOfTours: { $sum: 1 },
+          numOfRatings: { $sum: '$ratingsQuantity' },
+          avgRating: { $avg: '$ratingsAverage' },
+          avgPrice: { $avg: '$price' },
+          minPrice: { $min: '$price' },
+          maxPrice: { $max: '$price' },
+        },
+      },
+      { $sort: { avgPrice: 1 } },
+    ]);
+    res.status(200).json({
+      status: 'success',
+      data: stats,
+    });
+  } catch (error) {
+    res.status(400).json({
+      status: 'fail',
+      message: 'Some error occured',
+    });
+    console.log(error);
+  }
+};
+
+export const getMonthlyPlans = async (req: Request, res: Response) => {
+  try {
+    const {
+      params: { year },
+    } = req;
+
+    const plan = await Tour.aggregate([
+      // open up the array of start dates to individual objects
+      { $unwind: '$startDates' },
+      {
+        // run filtering based on start dates specs
+
+        $match: {
+          startDates: {
+            $gte: new Date(`${year}-01-01`),
+            $lte: new Date(`${year}-12-31`),
+          },
+        },
+      },
+      {
+        // run grouping based on start dates specs
+
+        $group: {
+          _id: { $month: '$startDates' },
+          numOfToursInYear: { $sum: 1 },
+          tours: { $push: '$name' },
+        },
+      },
+      { $addFields: { month: '$_id' } },
+      { $project: { _id: 0 } },
+      { $sort: { numOfToursInYear: -1 } },
+      { $limit: 12 },
+    ]);
+    res.status(200).json({
+      status: 'success',
+      data: plan,
     });
   } catch (error) {
     res.status(400).json({
